@@ -1,161 +1,120 @@
-import os, json, time, threading, requests
+import json
+import time
+import requests
 import numpy as np
-from binance.client import Client
-from flask import Flask, jsonify, render_template_string
+from flask import Flask
 
-# ================= CONFIG =================
-SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
-CHECK_INTERVAL = 60
-MIN_SCORE = 70
+# =========================
+# CONFIGURAÇÕES
+# =========================
+BINANCE_API = "https://api.binance.com/api/v3/klines"
+SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT"]
+TIMEFRAMES = {
+    "15m": "15m",
+    "1h": "1h",
+    "12h": "12h"
+}
 
-client = Client()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK_URL")
 
-with open("setup.json") as f:
-    SETUP = json.load(f)
+# =========================
+# UTILIDADES
+# =========================
+def send_telegram(msg):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
 
-dashboard = {"ranking": [], "trades": []}
-last_signal = {}
+def fetch_klines(symbol, interval, limit=100):
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
+    data = requests.get(BINANCE_API, params=params).json()
+    closes = [float(c[4]) for c in data]
+    return np.array(closes)
 
-# ================= INDICADORES =================
-def ema(data, period):
-    w = np.exp(np.linspace(-1., 0., period))
-    w /= w.sum()
-    return np.convolve(data, w, mode='valid')[-1]
+def ema(values, period):
+    weights = np.exp(np.linspace(-1., 0., period))
+    weights /= weights.sum()
+    return np.convolve(values, weights, mode="valid")
 
-def rsi(data, period=14):
-    delta = np.diff(data)
-    gain = np.maximum(delta, 0)
-    loss = np.abs(np.minimum(delta, 0))
-    avg_gain = np.mean(gain[-period:])
-    avg_loss = np.mean(loss[-period:])
-    return 100 if avg_loss == 0 else 100 - (100 / (1 + avg_gain / avg_loss))
+def rsi(values, period=14):
+    deltas = np.diff(values)
+    gains = np.where(deltas > 0, deltas, 0)
+    losses = np.where(deltas < 0, -deltas, 0)
 
-def closes(symbol, tf):
-    k = client.futures_klines(symbol=symbol, interval=tf, limit=100)
-    return np.array([float(c[4]) for c in k])
+    avg_gain = np.mean(gains[-period:])
+    avg_loss = np.mean(losses[-period:])
 
-# ================= SCORE =================
-def score_asset(symbol):
-    trend = momentum = volatility = 0
-    directions = []
+    if avg_loss == 0:
+        return 100
 
-    for tf in SETUP["timeframes"]:
-        c = closes(symbol, tf)
-        price = c[-1]
-        e9 = ema(c, 9)
-        e21 = ema(c, 21)
-        r = rsi(c)
-        mid = np.mean(c[-20:])
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
 
-        if e9 > e21: trend += 1
-        if 40 <= r <= 60: momentum += 1
-        if abs(price - mid) / price < 0.01: volatility += 1
+# =========================
+# ANÁLISE DO SETUP
+# =========================
+def analyze_symbol(symbol):
+    confirmations = []
 
-        if price > e21 and e9 > e21:
-            directions.append("LONG")
-        elif price < e21 and e9 < e21:
-            directions.append("SHORT")
+    for tf, interval in TIMEFRAMES.items():
+        closes = fetch_klines(symbol, interval)
 
-    direction = directions[0] if len(set(directions)) == 1 else "NEUTRO"
-    confluence = 3 if direction != "NEUTRO" else 0
+        ema9 = ema(closes, 9)[-1]
+        ema21 = ema(closes, 21)[-1]
+        current_price = closes[-1]
+        rsi_val = rsi(closes)
 
-    score = (
-        (trend/3)*30 +
-        (momentum/3)*30 +
-        (volatility/3)*20 +
-        (confluence/3)*20
-    )
-    return round(score, 2), direction, price
+        if current_price > ema21 and ema9 > ema21 and 40 <= rsi_val <= 60:
+            confirmations.append("LONG")
+        elif current_price < ema21 and ema9 < ema21 and 40 <= rsi_val <= 60:
+            confirmations.append("SHORT")
+        else:
+            return None
 
-# ================= ALERTAS =================
-def alert(msg):
-    if TELEGRAM_TOKEN:
-        requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json={"chat_id": TELEGRAM_CHAT_ID, "text": msg}
-        )
-    if DISCORD_WEBHOOK:
-        requests.post(DISCORD_WEBHOOK, json={"content": msg})
+    if all(c == confirmations[0] for c in confirmations):
+        return confirmations[0]
 
-# ================= BOT =================
-def bot():
-    print("STONKS BR SIGNALS - BOT INICIADO")
+    return None
+
+# =========================
+# LOOP PRINCIPAL
+# =========================
+def run_bot():
+    send_telegram("🤖 STONKS BR SIGNALS iniciado e monitorando o mercado.")
 
     while True:
-        ranking = []
+        for symbol in SYMBOLS:
+            direction = analyze_symbol(symbol)
 
-        for s in SYMBOLS:
-            score, direction, price = score_asset(s)
-            ranking.append({
-                "symbol": s,
-                "score": score,
-                "direction": direction,
-                "price": price
-            })
+            if direction:
+                msg = (
+                    f"📊 *SINAL CONFIRMADO*\n\n"
+                    f"Par: {symbol}\n"
+                    f"Direção: {direction}\n"
+                    f"Timeframes: 15m / 1h / 12h\n"
+                    f"Stop: 1%\n"
+                    f"Alvo: 2%\n"
+                    f"RR: 1:2\n\n"
+                    f"Setup: STONKS_BR_CORE_SETUP"
+                )
+                send_telegram(msg)
+                time.sleep(60)
 
-        ranking.sort(key=lambda x: x["score"], reverse=True)
-        dashboard["ranking"] = ranking[:3]
+        time.sleep(30)
 
-        for a in dashboard["ranking"]:
-            if a["score"] < MIN_SCORE or a["direction"] == "NEUTRO":
-                continue
-
-            if last_signal.get(a["symbol"]) == a["direction"]:
-                continue
-
-            sl = round(a["price"] * 0.99, 2)
-            tp = round(a["price"] * 1.02, 2)
-
-            trade = {
-                "symbol": a["symbol"],
-                "direction": a["direction"],
-                "entry": a["price"],
-                "sl": sl,
-                "tp": tp
-            }
-
-            dashboard["trades"].append(trade)
-            alert(
-                f"🔥 STONKS BR SIGNAL 🔥\n\n"
-                f"{a['symbol']} | {a['direction']}\n"
-                f"Entry: {a['price']}\n"
-                f"SL: {sl}\nTP: {tp}\n"
-                f"Score: {a['score']}"
-            )
-
-            last_signal[a["symbol"]] = a["direction"]
-
-        time.sleep(CHECK_INTERVAL)
-
-# ================= DASHBOARD =================
+# =========================
+# FLASK (KEEP ALIVE)
+# =========================
 app = Flask(__name__)
 
 @app.route("/")
-def home():
-    return render_template_string("""
-<!doctype html>
-<html>
-<head>
-<title>STONKS BR DASHBOARD</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-</head>
-<body>
-<h2>STONKS BR SIGNALS</h2>
-<pre>{{ data }}</pre>
-</body>
-</html>
-""", data=json.dumps(dashboard, indent=2))
+def health():
+    return "STONKS BR SIGNALS - ONLINE"
 
-def web():
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
-
-# ================= START =================
 if __name__ == "__main__":
-    threading.Thread(target=web, daemon=True).start()
-    bot()
+    import threading
+    threading.Thread(target=run_bot).start()
+    app.run(host="0.0.0.0", port=8080)
 
 
 
