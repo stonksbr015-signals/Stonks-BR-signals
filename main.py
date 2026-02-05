@@ -19,10 +19,10 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"STONKS BR SIGNALS ONLINE")
 
-def start_http_server():
-    server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
-    print(f"Servidor HTTP ativo na porta {PORT}")
-    server.serve_forever()
+    def do_HEAD(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
 
 # ==================================================
 # TELEGRAM
