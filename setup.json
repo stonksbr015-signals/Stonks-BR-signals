@@ -1,0 +1,30 @@
+{
+  "setup_name": "STONKS_BR_CORE_SETUP",
+  "market": "Binance Futures",
+  "contract_type": "USD-M",
+  "analysis_type": "Multi-timeframe confluente",
+  "timeframes": ["15m", "1h", "12h"],
+  "indicators": {
+    "moving_averages": {
+      "type": "EMA",
+      "periods": [9, 21]
+    },
+    "rsi": {
+      "period": 14,
+      "overbought": 70,
+      "oversold": 30
+    },
+    "bollinger_bands": {
+      "period": 20,
+      "standard_deviation": 2
+    }
+  },
+  "risk_management": {
+    "stop_loss_percent": 1,
+    "take_profit_percent": 2
+  },
+  "signal_validation": {
+    "closed_candle_only": true,
+    "anti_spam": true
+  }
+}
