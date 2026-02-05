@@ -93,17 +93,11 @@ def send_alert(message: str):
 # ===============================
 
 def bot_loop():
-    print("Bot ativo - aguardando sinais...")
-
+    time.sleep(5)
+    send_alert("🧪 TESTE MANUAL DE ALERTA - STONKS BR")
     while True:
-        # ⚠️ Aqui futuramente entra:
-        # - leitura Binance
-        # - indicadores
-        # - score
-        # - ranking
-        # - confirmação candle fechado
+        time.sleep(60)
 
-        time.sleep(30)
 
 # ===============================
 # SERVIDOR HTTP (KEEP ALIVE + PAINEL)
