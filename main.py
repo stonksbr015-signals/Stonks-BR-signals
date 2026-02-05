@@ -69,20 +69,43 @@ def run_bot():
     print("STONKS BR SIGNALS - BOT INICIADO")
 
     start_message = "🚀 STONKS BR SIGNALS ONLINE 🚀"
-
     send_telegram_message(start_message)
     send_discord_message(start_message)
 
-    while True:
-        print("Bot ativo - aguardando sinais...")
-        time.sleep(60)
+    last_price = None
 
-# ===============================
-# START
-# ===============================
-if __name__ == "__main__":
-    threading.Thread(target=start_http_server, daemon=True).start()
-    run_bot()
+    while True:
+        try:
+            response = requests.get(
+                "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT",
+                timeout=10
+            )
+            data = response.json()
+            price = float(data["price"])
+
+            if last_price is None:
+                last_price = price
+                print(f"Preço inicial BTC: {price}")
+            else:
+                change = ((price - last_price) / last_price) * 100
+
+                if change >= 1:
+                    msg = f"📈 BTC SUBINDO +{change:.2f}%\nPreço: ${price}"
+                    send_telegram_message(msg)
+                    send_discord_message(msg)
+                    last_price = price
+
+                elif change <= -1:
+                    msg = f"📉 BTC CAINDO {change:.2f}%\nPreço: ${price}"
+                    send_telegram_message(msg)
+                    send_discord_message(msg)
+                    last_price = price
+
+            time.sleep(60)
+
+        except Exception as e:
+            print("Erro ao buscar preço:", e)
+            time.sleep(60)
 
 
 
