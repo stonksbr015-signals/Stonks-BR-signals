@@ -4,14 +4,14 @@ import threading
 import requests
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-# ==============================
-# CONFIG
-# ==============================
+# ==================================================
+# CONFIGURAÇÃO
+# ==================================================
 PORT = int(os.environ.get("PORT", 10000))
 
-# ==============================
-# SERVIDOR HTTP (RENDER FREE)
-# ==============================
+# ==================================================
+# SERVIDOR HTTP (OBRIGATÓRIO NO RENDER FREE)
+# ==================================================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -24,9 +24,9 @@ def start_http_server():
     print(f"Servidor HTTP ativo na porta {PORT}")
     server.serve_forever()
 
-# ==============================
+# ==================================================
 # TELEGRAM
-# ==============================
+# ==================================================
 def send_telegram_message(text):
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
@@ -47,21 +47,46 @@ def send_telegram_message(text):
     except Exception as e:
         print("Erro ao enviar Telegram:", e)
 
-# ==============================
-# BOT
-# ==============================
+# ==================================================
+# DISCORD WEBHOOK
+# ==================================================
+def send_discord_message(text):
+    webhook = os.environ.get("DISCORD_WEBHOOK_URL")
+
+    if not webhook:
+        print("Discord webhook não configurado")
+        return
+
+    payload = {
+        "content": text
+    }
+
+    try:
+        requests.post(webhook, json=payload, timeout=10)
+        print("Mensagem enviada para o Discord")
+    except Exception as e:
+        print("Erro ao enviar Discord:", e)
+
+# ==================================================
+# BOT PRINCIPAL
+# ==================================================
 def run_bot():
     print("STONKS BR SIGNALS - BOT INICIADO")
-    send_telegram_message("TESTE TELEGRAM - SE VOCÊ LEU ISSO, FUNCIONOU")
+
+    mensagem = "🚀 STONKS BR SIGNALS ONLINE 🚀"
+
+    send_telegram_message(mensagem)
+    send_discord_message(mensagem)
 
     while True:
         print("Bot ativo - aguardando sinais...")
         time.sleep(60)
 
-# ==============================
+# ==================================================
 # MAIN
-# ==============================
+# ==================================================
 if __name__ == "__main__":
     threading.Thread(target=start_http_server, daemon=True).start()
     run_bot()
+
 
