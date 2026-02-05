@@ -1,7 +1,7 @@
-print("STONKS BR SIGNALS - BOT INICIADO")
-
 import time
 
+print("STONKS BR SIGNALS ONLINE")
+
 while True:
-    print("Bot ativo...")
+    print("Bot ativo - aguardando...")
     time.sleep(60)
