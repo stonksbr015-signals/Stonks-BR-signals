@@ -1,13 +1,9 @@
-import os
-import json
-import time
-import threading
-import requests
+import os, json, time, threading, requests
 import numpy as np
 from binance.client import Client
-from flask import Flask
+from flask import Flask, jsonify
 
-# ================== CONFIG ==================
+# ================= CONFIG =================
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
 BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET")
 
@@ -15,19 +11,20 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK_URL")
 
-SYMBOLS = ["BTCUSDT", "ETHUSDT"]
-CHECK_INTERVAL = 60  # segundos
-
-# ============================================
+SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"]
+CHECK_INTERVAL = 60
+MIN_SCORE = 70
+# =========================================
 
 client = Client(BINANCE_API_KEY, BINANCE_API_SECRET)
 
-with open("setup.json", "r") as f:
+with open("setup.json") as f:
     SETUP = json.load(f)
 
+dashboard_data = {"status": "ONLINE", "ranking": []}
 last_signal = {}
 
-# ================== INDICADORES ==================
+# ============== INDICADORES ==============
 def ema(data, period):
     weights = np.exp(np.linspace(-1., 0., period))
     weights /= weights.sum()
@@ -41,19 +38,15 @@ def rsi(data, period=14):
     avg_loss = np.mean(loss[-period:])
     if avg_loss == 0:
         return 100
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+    return 100 - (100 / (1 + avg_gain / avg_loss))
 
-def bollinger_mid(data, period=20):
-    return np.mean(data[-period:])
-
-# ================== DADOS ==================
-def get_closes(symbol, interval, limit=100):
-    klines = client.futures_klines(symbol=symbol, interval=interval, limit=limit)
+def get_closes(symbol, interval):
+    klines = client.futures_klines(symbol=symbol, interval=interval, limit=100)
     return np.array([float(k[4]) for k in klines])
 
-# ================== SINAL ==================
-def analyze_symbol(symbol):
+# ============== SCORE =====================
+def calculate_score(symbol):
+    trend, momentum, volatility, confluence = 0, 0, 0, 0
     directions = []
 
     for tf in SETUP["timeframes"]:
@@ -63,54 +56,80 @@ def analyze_symbol(symbol):
         ema9 = ema(closes, 9)
         ema21 = ema(closes, 21)
         rsi_val = rsi(closes)
-        bb_mid = bollinger_mid(closes)
+        bb_mid = np.mean(closes[-20:])
 
-        if price > ema21 and ema9 > ema21 and 40 <= rsi_val <= 60 and price >= bb_mid:
+        if ema9 > ema21:
+            trend += 1
+        if 40 <= rsi_val <= 60:
+            momentum += 1
+        if abs(price - bb_mid) / price < 0.01:
+            volatility += 1
+
+        if price > ema21 and ema9 > ema21:
             directions.append("LONG")
-        elif price < ema21 and ema9 < ema21 and 40 <= rsi_val <= 60 and price <= bb_mid:
+        elif price < ema21 and ema9 < ema21:
             directions.append("SHORT")
-        else:
-            return None
 
     if len(set(directions)) == 1:
-        return directions[0], price
+        confluence = 3
+        direction = directions[0]
+    else:
+        direction = "NEUTRO"
 
-    return None
+    score = (
+        (trend / 3) * 30 +
+        (momentum / 3) * 30 +
+        (volatility / 3) * 20 +
+        (confluence / 3) * 20
+    )
 
-# ================== ALERTAS ==================
+    return round(score, 2), direction
+
+# ============== ALERTAS ===================
 def send_alert(msg):
     if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
             json={"chat_id": TELEGRAM_CHAT_ID, "text": msg}
         )
-
     if DISCORD_WEBHOOK:
         requests.post(DISCORD_WEBHOOK, json={"content": msg})
 
-# ================== LOOP ==================
+# ============== BOT LOOP ==================
 def bot_loop():
+    global dashboard_data
     print("STONKS BR SIGNALS - BOT INICIADO")
+
     while True:
+        ranking = []
+
         for symbol in SYMBOLS:
-            result = analyze_symbol(symbol)
-            if not result:
+            score, direction = calculate_score(symbol)
+            ranking.append({
+                "symbol": symbol,
+                "score": score,
+                "direction": direction
+            })
+
+        ranking.sort(key=lambda x: x["score"], reverse=True)
+        top3 = ranking[:3]
+        dashboard_data["ranking"] = top3
+
+        for asset in top3:
+            if asset["score"] < MIN_SCORE or asset["direction"] == "NEUTRO":
                 continue
 
-            direction, price = result
+            symbol = asset["symbol"]
+            direction = asset["direction"]
 
             if last_signal.get(symbol) == direction:
                 continue
 
-            stop = price * (1 - 0.01) if direction == "LONG" else price * (1 + 0.01)
-            target = price * (1 + 0.02) if direction == "LONG" else price * (1 - 0.02)
-
             msg = (
-                f"🚀 {symbol} {direction}\n\n"
-                f"Preço: {price:.2f}\n"
-                f"Timeframes: {', '.join(SETUP['timeframes'])}\n"
-                f"Stop: {stop:.2f}\n"
-                f"Alvo: {target:.2f}\n"
+                f"🔥 TOP 3 SIGNAL 🔥\n\n"
+                f"Par: {symbol}\n"
+                f"Direção: {direction}\n"
+                f"Score: {asset['score']}\n"
                 f"Setup: {SETUP['setup_name']}"
             )
 
@@ -119,21 +138,22 @@ def bot_loop():
 
         time.sleep(CHECK_INTERVAL)
 
-# ================== HTTP SERVER ==================
+# ============== WEB =======================
 app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "STONKS BR SIGNALS ONLINE"
+    return jsonify(dashboard_data)
 
 def start_http():
     port = int(os.getenv("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
-# ================== START ==================
+# ============== START =====================
 if __name__ == "__main__":
     threading.Thread(target=start_http, daemon=True).start()
     bot_loop()
+
 
 
 
