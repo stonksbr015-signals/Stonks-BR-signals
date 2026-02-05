@@ -69,11 +69,8 @@ def run_bot():
 # =========================
 if __name__ == "__main__":
     threading.Thread(target=start_http_server, daemon=True).start()
-    threading.Thread(target=run_bot, daemon=False).start()
+    run_bot()
 
-
-    while True:
-        time.sleep(3600)
 
 
 
