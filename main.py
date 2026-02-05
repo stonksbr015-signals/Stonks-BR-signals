@@ -1,113 +1,139 @@
 import os
+import json
 import time
 import threading
 import requests
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import numpy as np
+from binance.client import Client
+from flask import Flask
 
-# ===============================
-# TELEGRAM
-# ===============================
-def send_telegram_message(text):
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+# ================== CONFIG ==================
+BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
+BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET")
 
-    if not token or not chat_id:
-        print("Telegram não configurado")
-        return
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK_URL")
 
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text
-    }
+SYMBOLS = ["BTCUSDT", "ETHUSDT"]
+CHECK_INTERVAL = 60  # segundos
 
-    try:
-        requests.post(url, json=payload, timeout=10)
-        print("Mensagem enviada para o Telegram")
-    except Exception as e:
-        print("Erro Telegram:", e)
+# ============================================
 
-# ===============================
-# DISCORD
-# ===============================
-def send_discord_message(text):
-    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
+client = Client(BINANCE_API_KEY, BINANCE_API_SECRET)
 
-    if not webhook_url:
-        print("Discord não configurado")
-        return
+with open("setup.json", "r") as f:
+    SETUP = json.load(f)
 
-    payload = {
-        "content": text
-    }
+last_signal = {}
 
-    try:
-        requests.post(webhook_url, json=payload, timeout=10)
-        print("Mensagem enviada para o Discord")
-    except Exception as e:
-        print("Erro Discord:", e)
+# ================== INDICADORES ==================
+def ema(data, period):
+    weights = np.exp(np.linspace(-1., 0., period))
+    weights /= weights.sum()
+    return np.convolve(data, weights, mode='valid')[-1]
 
-# ===============================
-# HTTP KEEP ALIVE
-# ===============================
-class SimpleHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"STONKS BR SIGNALS ONLINE")
+def rsi(data, period=14):
+    delta = np.diff(data)
+    gain = np.maximum(delta, 0)
+    loss = np.abs(np.minimum(delta, 0))
+    avg_gain = np.mean(gain[-period:])
+    avg_loss = np.mean(loss[-period:])
+    if avg_loss == 0:
+        return 100
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
 
-def start_http_server():
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), SimpleHandler)
-    print(f"Servidor HTTP ativo na porta {port}")
-    server.serve_forever()
+def bollinger_mid(data, period=20):
+    return np.mean(data[-period:])
 
-# ===============================
-# BOT PRINCIPAL
-# ===============================
-def run_bot():
+# ================== DADOS ==================
+def get_closes(symbol, interval, limit=100):
+    klines = client.futures_klines(symbol=symbol, interval=interval, limit=limit)
+    return np.array([float(k[4]) for k in klines])
+
+# ================== SINAL ==================
+def analyze_symbol(symbol):
+    directions = []
+
+    for tf in SETUP["timeframes"]:
+        closes = get_closes(symbol, tf)
+        price = closes[-1]
+
+        ema9 = ema(closes, 9)
+        ema21 = ema(closes, 21)
+        rsi_val = rsi(closes)
+        bb_mid = bollinger_mid(closes)
+
+        if price > ema21 and ema9 > ema21 and 40 <= rsi_val <= 60 and price >= bb_mid:
+            directions.append("LONG")
+        elif price < ema21 and ema9 < ema21 and 40 <= rsi_val <= 60 and price <= bb_mid:
+            directions.append("SHORT")
+        else:
+            return None
+
+    if len(set(directions)) == 1:
+        return directions[0], price
+
+    return None
+
+# ================== ALERTAS ==================
+def send_alert(msg):
+    if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": msg}
+        )
+
+    if DISCORD_WEBHOOK:
+        requests.post(DISCORD_WEBHOOK, json={"content": msg})
+
+# ================== LOOP ==================
+def bot_loop():
     print("STONKS BR SIGNALS - BOT INICIADO")
-
-    start_message = "🚀 STONKS BR SIGNALS ONLINE 🚀"
-    send_telegram_message(start_message)
-    send_discord_message(start_message)
-
-    last_price = None
-
     while True:
-        try:
-            response = requests.get(
-                "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT",
-                timeout=10
+        for symbol in SYMBOLS:
+            result = analyze_symbol(symbol)
+            if not result:
+                continue
+
+            direction, price = result
+
+            if last_signal.get(symbol) == direction:
+                continue
+
+            stop = price * (1 - 0.01) if direction == "LONG" else price * (1 + 0.01)
+            target = price * (1 + 0.02) if direction == "LONG" else price * (1 - 0.02)
+
+            msg = (
+                f"🚀 {symbol} {direction}\n\n"
+                f"Preço: {price:.2f}\n"
+                f"Timeframes: {', '.join(SETUP['timeframes'])}\n"
+                f"Stop: {stop:.2f}\n"
+                f"Alvo: {target:.2f}\n"
+                f"Setup: {SETUP['setup_name']}"
             )
-            data = response.json()
-            price = float(data["price"])
 
-            if last_price is None:
-                last_price = price
-                print(f"Preço inicial BTC: {price}")
-            else:
-                change = ((price - last_price) / last_price) * 100
+            send_alert(msg)
+            last_signal[symbol] = direction
 
-                if change >= 1:
-                    msg = f"📈 BTC SUBINDO +{change:.2f}%\nPreço: ${price}"
-                    send_telegram_message(msg)
-                    send_discord_message(msg)
-                    last_price = price
+        time.sleep(CHECK_INTERVAL)
 
-                elif change <= -1:
-                    msg = f"📉 BTC CAINDO {change:.2f}%\nPreço: ${price}"
-                    send_telegram_message(msg)
-                    send_discord_message(msg)
-                    last_price = price
+# ================== HTTP SERVER ==================
+app = Flask(__name__)
 
-            time.sleep(60)
+@app.route("/")
+def home():
+    return "STONKS BR SIGNALS ONLINE"
 
-        except Exception as e:
-            print("Erro ao buscar preço:", e)
-            time.sleep(60)
+def start_http():
+    port = int(os.getenv("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
 
-
+# ================== START ==================
+if __name__ == "__main__":
+    threading.Thread(target=start_http, daemon=True).start()
+    bot_loop()
 
 
 
