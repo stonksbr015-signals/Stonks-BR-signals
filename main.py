@@ -1,40 +1,50 @@
 import os
 import time
-import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import requests
+from flask import Flask
 
-# ==============================
-# CONFIG
-# ==============================
-PORT = int(os.environ.get("PORT", 10000))
+app = Flask(__name__)
 
-# ==============================
-# SERVIDOR HTTP (OBRIGATÓRIO PARA RENDER)
-# ==============================
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain")
-        self.end_headers()
-        self.wfile.write(b"STONKS BR SIGNALS ONLINE")
+@app.route("/")
+def home():
+    return "STONKS BR SIGNALS ONLINE", 200
 
-def start_http_server():
-    server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
-    print(f"Servidor HTTP ativo na porta {PORT}")
-    server.serve_forever()
 
-# ==============================
-# BOT (LOOP PRINCIPAL)
-# ==============================
+def send_telegram_message(text):
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+
+    if not token or not chat_id:
+        print("Telegram não configurado")
+        return
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text
+    }
+
+    try:
+        requests.post(url, json=payload, timeout=10)
+        print("Mensagem enviada para o Telegram")
+    except Exception as e:
+        print("Erro ao enviar Telegram:", e)
+
+
 def run_bot():
     print("STONKS BR SIGNALS - BOT INICIADO")
+    send_telegram_message("🚀 STONKS BR SIGNALS ONLINE 🚀")
+
     while True:
         print("Bot ativo - aguardando sinais...")
         time.sleep(60)
 
-# ==============================
-# MAIN
-# ==============================
+
 if __name__ == "__main__":
-    threading.Thread(target=start_http_server, daemon=True).start()
-    run_bot()
+    import threading
+
+    threading.Thread(target=run_bot, daemon=True).start()
+
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
